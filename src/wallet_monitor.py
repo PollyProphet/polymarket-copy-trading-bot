@@ -15,7 +15,7 @@ from polymarket_apis.clients.data_client import PolymarketDataClient
 
 from src.activity_queue import ActivityQueue
 from src.logger import log
-from src.utils.time_utils import TIMEZONE_UTC8, get_latest_timestamp
+from src.utils.time_utils import TIMEZONE_UTC8, get_latest_timestamp, advance_checkpoint
 from src.utils.activity_logger import log_activities
 
 
@@ -34,6 +34,7 @@ class WalletMonitor:
         activity_queue: ActivityQueue,
         batch_size: int = 500,
         proxy: Optional[str] = None,
+        timeout: float = 30.0,
         verify_ssl: bool = True
     ):
         """
@@ -55,7 +56,12 @@ class WalletMonitor:
         self.data_client = PolymarketDataClient()
 
         # Configure API client
-        self.data_client.client = httpx.Client(proxy=proxy, verify=verify_ssl) if proxy else httpx.Client(verify=verify_ssl)
+        if proxy:
+            self.data_client.client = httpx.Client(
+                proxy=proxy, verify=verify_ssl, timeout=timeout
+            )
+        else:
+            self.data_client.client = httpx.Client(verify=verify_ssl, timeout=timeout)
 
         self.stop_event = threading.Event()
         self.executor: Optional[ThreadPoolExecutor] = None
@@ -111,9 +117,9 @@ class WalletMonitor:
                     checkpoint
                 )
 
-                # Update checkpoint to latest activity timestamp
+                # Update checkpoint past the latest activity to avoid re-processing
                 if updated_checkpoint:
-                    checkpoint = updated_checkpoint
+                    checkpoint = advance_checkpoint(updated_checkpoint)
 
                 if total_activities > 0:
                     log.info(

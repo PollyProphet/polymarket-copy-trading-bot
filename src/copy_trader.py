@@ -115,7 +115,7 @@ class CopyTrader:
         self._log_balance()
 
         # For proxy mode, set API allowance
-        if self.signature_type == 2:
+        if self.signature_type in (1, 2):
             self._ensure_api_allowance()
 
         # Trading statistics
@@ -138,10 +138,10 @@ class CopyTrader:
             }
 
             # If proxy mode, need to specify funder address
-            if self.signature_type == 2:
+            if self.signature_type in (1, 2):
                 if not self.proxy_address:
                     raise ValueError(
-                        f"Wallet '{self.name}' uses signature_type=2 (proxy mode), "
+                        f"Wallet '{self.name}' uses signature_type={self.signature_type} (proxy mode), "
                         f"must configure proxy_address (proxy contract address)"
                     )
                 client_params['funder'] = self.proxy_address

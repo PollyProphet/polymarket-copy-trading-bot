@@ -1,38 +1,42 @@
-"""测试完整的监控流程（模拟分页获取）"""
+"""Test wallet monitoring flow (including pagination)."""
 import time
+
 from src.config_loader import load_config
+from src.in_memory_activity_queue import InMemoryActivityQueue
 from src.wallet_monitor import WalletMonitor
 from src.logger import log
 
+
 def test_monitor():
-    """测试钱包监控"""
+    """Test wallet monitoring with the current WalletMonitor API."""
     config = load_config("config.yaml")
 
-    db_url = config['database']['url']
     wallets = config['monitoring']['wallets']
-    batch_size = 10  # 使用小批次测试分页逻辑
+    batch_size = config['monitoring'].get('batch_size', 10)
+    api_config = config.get('polymarket_api', {})
 
-    log.info(f"开始测试监控，批次大小: {batch_size}")
+    log.info(f"Starting monitor test with batch size: {batch_size}")
 
-    # 创建监控器
+    activity_queue = InMemoryActivityQueue(max_workers=1)
     monitor = WalletMonitor(
         wallets=wallets,
-        poll_interval=300,  # 5分钟轮询一次（测试时只运行一轮）
-        db_url=db_url,
+        poll_interval=300,
+        activity_queue=activity_queue,
         batch_size=batch_size,
-        proxy=config.get('polymarket_api', {}).get('proxy')
+        proxy=api_config.get('proxy'),
+        timeout=api_config.get('timeout', 30.0),
+        verify_ssl=api_config.get('verify_ssl', True),
     )
 
-    # 启动监控
     monitor.start()
 
-    # 等待10秒让第一轮完成
-    log.info("等待第一轮监控完成...")
+    log.info("Waiting for the first monitoring round to complete...")
     time.sleep(10)
 
-    # 停止监控
     monitor.stop()
-    log.info("测试完成")
+    activity_queue.shutdown()
+    log.info("Monitor test complete")
+
 
 if __name__ == "__main__":
     test_monitor()

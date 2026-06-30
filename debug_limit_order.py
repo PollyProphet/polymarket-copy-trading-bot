@@ -96,7 +96,7 @@ def debug_create_limit_order(
         result = copy_trader.order_executor.execute_limit_order(
             token_id=token_id,
             side=side.upper(),
-            size=amount,
+            amount_usdc=amount,
             price=price
         )
 

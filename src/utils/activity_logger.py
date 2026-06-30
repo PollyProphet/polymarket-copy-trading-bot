@@ -35,7 +35,7 @@ def get_trade_value(activity: Any) -> float:
     Returns:
         Trade value in USDC
     """
-    cash_amount = getattr(activity, 'cash_amount', 0)
+    cash_amount = getattr(activity, 'cash_amount', 0) or 0
     if cash_amount > 0:
         return float(cash_amount)
 

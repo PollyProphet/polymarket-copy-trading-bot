@@ -119,17 +119,18 @@ def _validate_user_wallets(wallets: list) -> list:
                 f"User wallet '{wallet['name']}' signature_type must be 0, 1 or 2, current value: {signature_type}"
             )
 
-        # If using proxy mode (signature_type=2), must configure proxy_address
-        if signature_type == 2:
+        # If using proxy mode (signature_type 1 or 2), must configure proxy_address
+        if signature_type in (1, 2):
             if 'proxy_address' not in wallet or not wallet['proxy_address']:
                 raise ValueError(
-                    f"User wallet '{wallet['name']}' uses signature_type=2 (proxy mode), "
+                    f"User wallet '{wallet['name']}' uses signature_type={signature_type} (proxy mode), "
                     f"must configure 'proxy_address' (Polymarket proxy contract address)"
                 )
 
         # Set default values
         wallet.setdefault('signature_type', 0)  # Default to EOA mode
         strategy.setdefault('min_trigger_amount', 0)
+        strategy.setdefault('min_trade_amount', 0)
         strategy.setdefault('max_trade_amount', 0)  # 0 means no limit
         strategy.setdefault('order_type', 'market')
         strategy.setdefault('limit_order_duration', 7200)

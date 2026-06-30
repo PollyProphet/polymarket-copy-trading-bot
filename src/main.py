@@ -9,7 +9,7 @@ import signal
 import sys
 
 from src.config_loader import load_config
-from src.logger import setup_logger
+from src.logger import setup_logger, log
 from src.wallet_monitor import WalletMonitor
 from src.in_memory_activity_queue import InMemoryActivityQueue
 from src.copy_trader import CopyTrader
@@ -111,6 +111,7 @@ def main():
             activity_queue=activity_queue,
             batch_size=batch_size,
             proxy=proxy,
+            timeout=timeout,
             verify_ssl=verify_ssl
         )
 

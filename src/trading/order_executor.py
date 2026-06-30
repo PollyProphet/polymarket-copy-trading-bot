@@ -25,6 +25,17 @@ class OrderExecutor:
     Supports both market and limit orders.
     """
 
+    @staticmethod
+    def _normalize_side(side: str) -> str:
+        return side.upper()
+
+    @staticmethod
+    def _usdc_to_token_size(amount_usdc: float, price: float) -> float:
+        """Convert a USDC notional into outcome token quantity."""
+        if price <= 0:
+            raise OrderExecutionError("Price must be greater than 0 to convert USDC to token size")
+        return amount_usdc / price
+
     def __init__(self, clob_client: ClobClient, wallet_name: str = "Wallet", signature_type: int = 0):
         """
         Initialize order executor.
@@ -72,7 +83,8 @@ class OrderExecutor:
         self,
         token_id: str,
         side: Any,
-        amount: float
+        amount: float,
+        price: Optional[float] = None
     ) -> Dict:
         """
         Execute a market order.
@@ -80,7 +92,8 @@ class OrderExecutor:
         Args:
             token_id: Token ID
             side: Order side (BUY/SELL)
-            amount: Order amount in USDC
+            amount: USDC notional for BUY orders; converted to token quantity for SELL
+            price: Reference price used to convert USDC to token size for SELL orders
 
         Returns:
             Order response dictionary
@@ -89,29 +102,41 @@ class OrderExecutor:
             OrderExecutionError: If order execution fails
         """
         try:
-            # Create market order parameters
+            side = self._normalize_side(side)
+
+            # py-clob-client: BUY amount is USDC, SELL amount is outcome token quantity
+            if side == 'BUY':
+                order_amount = amount
+                amount_display = f"${amount:.2f} USDC"
+            else:
+                if price is None:
+                    raise OrderExecutionError(
+                        "SELL market orders require price to convert USDC notional to token size"
+                    )
+                order_amount = self._usdc_to_token_size(amount, price)
+                amount_display = f"{order_amount:.4f} tokens (${amount:.2f} USDC @ {price})"
+
             market_order_args = MarketOrderArgs(
                 token_id=token_id,
-                amount=amount,
+                amount=order_amount,
                 side=side,
                 order_type=OrderType.FOK  # Fill or Kill
             )
 
-            # Create signed order
             signed_order = self.clob_client.create_market_order(market_order_args)
-
-            # Submit order
             response = self.clob_client.post_order(signed_order, OrderType.FOK)
 
             log.info(
                 f"[{self.name}] Market order submitted | "
                 f"token_id: {token_id} | "
                 f"side: {side} | "
-                f"amount: ${amount:.2f}"
+                f"amount: {amount_display}"
             )
 
             return response
 
+        except OrderExecutionError:
+            raise
         except Exception as e:
             log.error(f"[{self.name}] Market order execution failed: {e}")
             raise OrderExecutionError(f"Market order failed: {e}")
@@ -120,7 +145,7 @@ class OrderExecutor:
         self,
         token_id: str,
         side: Any,
-        size: float,
+        amount_usdc: float,
         price: float
     ) -> Dict:
         """
@@ -129,7 +154,7 @@ class OrderExecutor:
         Args:
             token_id: Token ID
             side: Order side (BUY/SELL)
-            size: Order size (quantity)
+            amount_usdc: Target trade notional in USDC
             price: Limit price
 
         Returns:
@@ -139,11 +164,13 @@ class OrderExecutor:
             OrderExecutionError: If order execution fails
         """
         try:
-            # Create limit order parameters
+            side = self._normalize_side(side)
+            token_size = self._usdc_to_token_size(amount_usdc, price)
+
             order_args = OrderArgs(
                 token_id=token_id,
                 price=price,
-                size=size,
+                size=token_size,
                 side=side
             )
 
@@ -152,18 +179,15 @@ class OrderExecutor:
                 f"token_id: {token_id} | "
                 f"side: {side} | "
                 f"price: {price} | "
-                f"size: {size} | "
+                f"size: {token_size:.4f} tokens (${amount_usdc:.2f} USDC) | "
                 f"signature_type: {self.signature_type}"
             )
 
-            # Create signed order
             signed_order = self.clob_client.create_order(order_args)
 
-            # Log signed order details for debugging
             log.info(f"[{self.name}] Signed order content:")
             log.info(json.dumps(signed_order, indent=2, default=str))
 
-            # Submit order (for limit orders, post_order uses default order type)
             response = self.clob_client.post_order(signed_order)
 
             log.info(
@@ -171,11 +195,13 @@ class OrderExecutor:
                 f"token_id: {token_id} | "
                 f"side: {side} | "
                 f"price: {price} | "
-                f"size: {size}"
+                f"size: {token_size:.4f} tokens"
             )
 
             return response
 
+        except OrderExecutionError:
+            raise
         except Exception as e:
             log.error(f"[{self.name}] Limit order execution failed: {e}")
             raise OrderExecutionError(f"Limit order failed: {e}")
@@ -207,7 +233,7 @@ class OrderExecutor:
             OrderExecutionError: If order execution fails
         """
         # Normalize side string
-        side = side.upper()
+        side = self._normalize_side(side)
 
         # Get token_id
         token_id = self.get_token_id(condition_id, outcome)
@@ -216,9 +242,12 @@ class OrderExecutor:
                 f"Cannot get token_id: condition_id={condition_id}, outcome={outcome}"
             )
 
-        # Execute based on order type
         if order_type == 'market':
-            return self.execute_market_order(token_id, side, amount)
+            if side == 'SELL' and not price:
+                raise OrderExecutionError(
+                    "SELL market orders require price to convert USDC notional to token size"
+                )
+            return self.execute_market_order(token_id, side, amount, price=price)
         elif order_type == 'limit':
             if not price:
                 raise OrderExecutionError("Limit order requires price parameter")

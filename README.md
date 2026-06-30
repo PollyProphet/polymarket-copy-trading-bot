@@ -1,408 +1,330 @@
 # Polymarket 复制交易机器人
 
-自动跟随专业交易者在 Polymarket 上的交易策略，实现智能复制交易。
+**中文 | [English](README.en.md)**
 
-## 🌟 核心功能
+面向 [Polymarket](https://polymarket.com) 预测市场的自动化复制交易工具。实时监控目标钱包交易活动，并按可配置的规则在你的账户上自动跟单。
 
-- ✅ **实时监控**: 监控目标钱包的所有交易活动
-- ✅ **自动跟单**: 根据配置自动执行复制交易
-- ✅ **灵活策略**: 支持按比例缩放 (Scale) 和按比例分配 (Allocate) 模式
-- ✅ **风险控制**: 最小金额过滤、错误重试、交易统计
-- ✅ **多种订单**: 支持市价单和限价单
-- ✅ **事件驱动**: 基于消息队列的低延迟架构
+---
 
-## 📋 系统要求
+## 项目简介
 
-- Python 3.13+
-- PostgreSQL (可选，用于数据持久化)
-- 网络代理 (可选，用于访问 Polymarket API)
+本工具通过 Polymarket 官方 Data API 轮询目标钱包的新交易，并可选地通过 [Polymarket CLOB API](https://docs.polymarket.com/) 与 [`py-clob-client`](https://github.com/Polymarket/py-clob-client) 在你的钱包上执行镜像订单。
 
-## 🚀 快速开始
+支持两种运行模式：
 
-### 1. 安装依赖
+| 模式 | 说明 |
+|------|------|
+| **仅监控** | 记录目标钱包活动，不提交任何订单 |
+| **复制交易** | 自动复制符合条件的交易到你的钱包 |
+
+---
+
+## 功能特性
+
+- **实时钱包监控** — 轮询目标地址，通过内存队列分发活动事件
+- **自动复制交易** — 按策略镜像 BUY/SELL 交易
+- **灵活仓位控制** — Scale 模式（按目标成交额百分比）配合最小/最大 USDC 限制
+- **多种订单类型** — 支持市价单与限价单
+- **多种钱包模式** — EOA 直连签名或 Polymarket 代理钱包（`signature_type` 1/2）
+- **链上授权** — EOA 模式下自动完成 USDC 与条件代币授权
+- **容错机制** — 指数退避重试、结构化日志、优雅退出
+- **代理支持** — API 与 Polygon RPC 均可配置 HTTP 代理
+
+---
+
+## 系统架构
+
+```
+WalletMonitor  →  Activity Queue  →  CopyTrader  →  OrderExecutor  →  Polymarket CLOB
+     │                                      │
+     └── Polymarket Data API                └── py-clob-client + Web3 (Polygon)
+```
+
+1. `WalletMonitor` 轮询 Data API，获取目标钱包的新活动。
+2. 事件发布到 `InMemoryActivityQueue`（RabbitMQ 已规划，尚未实现）。
+3. 每个 `CopyTrader` 订阅目标钱包并执行策略过滤。
+4. 符合条件的交易由 `OrderExecutor` 提交至 CLOB API。
+
+---
+
+## 环境要求
+
+- **Python** 3.13+
+- 可访问 Polymarket API 与 Polygon RPC 的网络环境
+- **PostgreSQL**（可选 — 用于检查点/交易持久化工具）
+- **HTTP 代理**（可选 — 部分地区访问 Polymarket 需要）
+
+---
+
+## 安装
+
+### 方式 A — uv（推荐）
 
 ```bash
-# 使用 uv 管理依赖（推荐）
+git clone https://github.com/PollyProphet/polymarket-copy-trading-bot.git
+cd polymarket-copy-trading-bot
 uv sync
-
-# 或使用 pip
-pip install -r requirements.txt
+source .venv/bin/activate      # Linux / macOS
+.venv\Scripts\activate         # Windows
 ```
 
-### 2. 配置机器人
+### 方式 B — pip
 
 ```bash
-# 复制配置文件模板
-cp config.example.yaml config.yaml
-
-# 编辑配置文件
-vim config.yaml
+git clone https://github.com/PollyProphet/polymarket-copy-trading-bot.git
+cd polymarket-copy-trading-bot
+pip install -e .
 ```
 
-**关键配置**:
+---
+
+## 配置
+
+### 1. 创建配置文件
+
+```bash
+cp config.example.yaml config.yaml
+cp .env.example .env
+```
+
+在 `config.yaml` 中配置监控目标与策略。**私钥请写入 `.env`，切勿提交到 Git。**
+
+### 2. 最小复制交易配置
 
 ```yaml
-# 设置要监控的目标钱包
 monitoring:
   wallets:
-    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
+    - "0xTargetWalletAddress"
+  poll_interval_seconds: 5
+  batch_size: 100
 
-# 配置你的钱包和策略
+polymarket_api:
+  proxy: "http://localhost:7891"   # 可选
+  timeout: 30.0
+  verify_ssl: true
+
 user_wallets:
   - name: "MyWallet"
-    address: "0x..."
+    address: "0xYourEOAAddress"
     private_key_env: "MY_WALLET_PRIVATE_KEY"
+    signature_type: 0              # 0 = EOA，1/2 = 代理模式
 
     copy_strategy:
-      min_trade_amount: 10      # 最小触发金额
-      order_type: "market"      # 订单类型: market/limit
-      copy_mode: "scale"        # 复制模式: scale/allocate
-      scale_percentage: 10.0    # 按目标金额的 10% 跟单
+      min_trigger_amount: 10       # 目标交易低于此值（USDC）则跳过
+      min_trade_amount: 0            # 我方单笔跟单下限
+      max_trade_amount: 100          # 我方单笔跟单上限
+      order_type: "market"           # market | limit
+      copy_mode: "scale"
+      scale_percentage: 10.0         # 跟单目标成交额的 10%
 ```
 
-### 3. 设置私钥（安全方式）
+### 3. 设置私钥
 
-**推荐方式：使用 .env 文件**
+在 `.env` 中：
 
 ```bash
-# 复制 .env 示例文件
-cp .env.example .env
-
-# 编辑 .env 文件，填入实际私钥
-vim .env
+MY_WALLET_PRIVATE_KEY=0xYourPrivateKeyHere
 ```
 
-`.env` 文件内容示例：
-```bash
-# 替换为你的实际私钥（必须以 0x 开头）
-MY_WALLET_PRIVATE_KEY=0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-SCARB4_PRIVATE_KEY=0x...
+或在 shell 中导出环境变量。变量名须与 `config.yaml` 中的 `private_key_env` 一致。
+
+**代理钱包示例**（浏览器 / Polymarket 代理）：
+
+```yaml
+user_wallets:
+  - name: "ProxyWallet"
+    address: "0xYourEOAAddress"
+    proxy_address: "0xYourPolymarketProxyAddress"
+    signature_type: 2
+    private_key_env: "MY_WALLET_PRIVATE_KEY"
+    copy_strategy:
+      copy_mode: "scale"
+      scale_percentage: 5.0
+      order_type: "limit"
 ```
 
-**备选方式：直接设置环境变量**
+验证私钥与地址是否匹配：
 
 ```bash
-# Linux/Mac
-export MY_WALLET_PRIVATE_KEY="0x..."
-
-# Windows CMD
-set MY_WALLET_PRIVATE_KEY=0x...
-
-# Windows PowerShell
-$env:MY_WALLET_PRIVATE_KEY="0x..."
+python verify_key_address.py
 ```
 
-⚠️ **安全提示**:
-- 永远不要将私钥写入 `config.yaml` 配置文件！
-- `.env` 文件已在 `.gitignore` 中，不会被提交到版本控制
-- 私钥必须以 `0x` 开头，长度为 66 个字符
+完整配置说明见 [`config.example.yaml`](config.example.yaml)。
 
-### 4. 安装依赖并运行
+---
+
+## 运行
 
 ```bash
-# 安装/更新依赖（已添加 python-dotenv）
-uv sync
-
-# 激活虚拟环境
-source .venv/bin/activate  # Linux/Mac
-.venv\Scripts\activate     # Windows
-
-# 运行主程序
 python -m src.main
 ```
 
-启动时会看到：
+正常启动时输出类似：
+
 ```
-✓ 已加载环境变量文件: E:\...\polymarket-copy-trading-bot\.env
-正在加载配置文件...
-CopyTrader 'MyWallet' 已初始化 | 地址: 0x... | 模式: scale
-监控运行中,按 Ctrl+C 退出...
-```
-## 📊 运行模式
-
-### 监控模式（默认）
-
-不配置 `user_wallets`，程序只监控并打印日志：
-
-```yaml
-# 不配置或注释掉 user_wallets
-# user_wallets: []
+Loaded .env file: .../polymarket-copy-trading-bot/.env
+CopyTrader 'MyWallet' initialized | Address: 0x... | Mode: scale
+Monitoring running, press Ctrl+C to exit...
 ```
 
-### 复制交易模式
+按 `Ctrl+C` 优雅退出，程序会打印交易统计。
 
-配置至少一个 `user_wallet`，程序自动执行复制交易：
+### 仅监控模式
 
-```yaml
-user_wallets:
-  - name: "MyWallet"
-    address: "0x..."
-    # ... 策略配置
-```
+不配置 `user_wallets` 或留空即可。程序只记录活动，不提交订单。
 
-## 🎯 复制策略说明
+---
 
-### Scale 模式（按比例缩放）
+## 复制策略
 
-按目标交易金额的固定百分比跟单：
+### Scale 模式（推荐）
+
+按目标交易 USDC 成交额的固定比例跟单：
 
 ```yaml
 copy_mode: "scale"
-scale_percentage: 10.0  # 目标交易 100 USDC，我跟 10 USDC
+scale_percentage: 10.0   # 目标交易 $100 → 你交易 $10
 ```
 
-**适用场景**:
-- 资金规模固定
-- 希望固定倍数放大/缩小风险敞口
+### Allocate 模式（实验性）
 
-### Allocate 模式（按比例分配）
+按资产比例分配的功能**尚未完整实现**，当前会回退为 10% 的 Scale 逻辑。
 
-按目标钱包资产配置比例跟单（暂未完全实现）：
+---
 
-```yaml
-copy_mode: "allocate"
-# 目标用其总资产的 5% 交易，我也用我总资产的 5% 跟单
-```
+## 风险控制
 
-**适用场景**:
-- 资金规模与目标不同
-- 希望保持相同的资产配置比例
+| 参数 | 作用 |
+|------|------|
+| `min_trigger_amount` | 忽略低于此 USDC 值的目标交易 |
+| `min_trade_amount` | 缩放后金额过小时，抬升我方跟单金额 |
+| `max_trade_amount` | 限制我方单笔跟单上限（`0` 表示不限制） |
+| `order_type` | `market` 即时成交；`limit` 使用目标成交价 |
 
-## 🛡️ 风险控制
+**订单语义说明**
 
-### 过滤机制
+- **市价 BUY** — 金额为 USDC
+- **市价 SELL** — 按参考价格将 USDC 换算为代币数量
+- **限价单** — 按限价将 USDC 名义金额换算为代币数量
 
-```yaml
-copy_strategy:
-  # 最小触发金额，避免跟随小额测试交易
-  min_trade_amount: 10
-```
+---
 
-### 订单类型
+## 钱包签名类型
 
-**市价单** (推荐新手):
-- 优点: 快速成交
-- 缺点: 可能有滑点
+| `signature_type` | 模式 | 说明 |
+|------------------|------|------|
+| `0` | EOA | 私钥直接签名；需链上代币授权 |
+| `1` | Polymarket 代理 | 需配置 `proxy_address` |
+| `2` | 浏览器钱包代理 | 需配置 `proxy_address`；先在 Polymarket 完成「Enable Trading」 |
 
-```yaml
-order_type: "market"
-```
+---
 
-**限价单** (推荐进阶):
-- 优点: 价格保障，避免滑点
-- 缺点: 可能不成交
-
-```yaml
-order_type: "limit"
-limit_order_duration: 7200  # 2 小时有效期
-```
-
-## 📁 项目结构
+## 项目结构
 
 ```
 polymarket-copy-trading-bot/
 ├── src/
-│   ├── main.py                  # 主程序入口
-│   ├── copy_trader.py          # 复制交易核心类 ⭐ NEW
-│   ├── wallet_monitor.py       # 钱包监控器
-│   ├── activity_queue.py       # 消息队列接口
-│   ├── in_memory_activity_queue.py  # 内存队列实现
-│   ├── config_loader.py        # 配置加载器（已扩展）
-│   ├── database_handler.py     # 数据库处理
-│   ├── models.py               # 数据模型
-│   └── logger.py               # 日志工具
-├── config.yaml                 # 配置文件（需创建）
-├── config.example.yaml         # 配置文件示例 ⭐ NEW
-├── test_copy_trader.py         # 单元测试 ⭐ NEW
-├── COPY_TRADING_IMPLEMENTATION.md  # 实现文档 ⭐ NEW
-└── README.md                   # 本文件
+│   ├── main.py                     # 程序入口
+│   ├── wallet_monitor.py           # 目标钱包轮询
+│   ├── copy_trader.py              # 复制交易逻辑
+│   ├── in_memory_activity_queue.py # 内存事件队列
+│   ├── config_loader.py            # 配置与环境变量加载
+│   ├── trading/order_executor.py   # CLOB 订单提交
+│   └── blockchain/token_approver.py# Polygon 链上授权（EOA）
+├── config.example.yaml
+├── .env.example
+├── docs/design/                    # 设计文档
+├── test_*.py                       # 测试脚本
+└── debug_limit_order.py            # 限价单调试工具
 ```
-
-## 🧪 测试
-
-```bash
-# 运行单元测试
-python test_copy_trader.py
-
-# 运行消息队列测试
-python test_message_queue.py
-```
-
-## 📝 日志
-
-日志文件位于 `logs/` 目录，按日期分割：
-
-```bash
-# 实时查看日志
-tail -f logs/$(date +%Y-%m-%d).log  # Linux/Mac
-type logs\YYYY-MM-DD.log            # Windows
-```
-
-日志包含：
-- 监控状态
-- 交易活动
-- 复制交易决策
-- 订单执行结果
-- 错误和重试信息
-
-## 🔧 配置参考
-
-### 完整配置示例
-
-```yaml
-# 数据库配置（可选）
-database:
-  url: "postgresql://user:pass@localhost:5432/polymarket_bot"
-
-# 日志配置
-logging:
-  log_dir: "logs"
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-
-# API 配置
-polymarket_api:
-  proxy: "http://localhost:7891"  # 可选
-  timeout: 30.0
-
-# 监控配置
-monitoring:
-  wallets:
-    - "0x..."  # 目标钱包地址
-  poll_interval_seconds: 5
-  batch_size: 100
-
-# 消息队列配置
-queue:
-  type: "memory"
-  memory:
-    max_workers: 10
-
-# 复制交易配置
-user_wallets:
-  - name: "MyWallet"
-    address: "0x..."
-    private_key_env: "MY_WALLET_PRIVATE_KEY"
-
-    copy_strategy:
-      min_trade_amount: 10
-      order_type: "market"
-      limit_order_duration: 7200
-      copy_mode: "scale"
-      scale_percentage: 10.0
-```
-
-## ⚠️ 安全建议
-
-1. **私钥管理**
-   - 使用环境变量存储私钥
-   - 生产环境使用密钥管理服务（AWS Secrets Manager、HashiCorp Vault）
-   - 定期轮换私钥
-
-2. **资金安全**
-   - 使用专用的交易钱包
-   - 从小额测试开始
-   - 定期检查账户余额
-
-3. **风险控制**
-   - 设置合理的 `min_trade_amount`
-   - 使用较小的 `scale_percentage` 开始
-   - 监控交易统计和失败率
-
-4. **运营安全**
-   - 监控程序运行状态
-   - 设置告警机制
-   - 定期备份配置和数据
-
-## 📊 监控指标
-
-程序退出时会打印交易统计：
-
-```
-[MyWallet] 交易统计:
-  - 总活动数: 150
-  - 已过滤: 100
-  - 尝试交易: 50
-  - 成功: 48
-  - 失败: 2
-```
-
-## 🐛 故障排查
-
-### 问题: 程序无法启动
-
-**检查**:
-- 环境变量是否设置
-- 配置文件格式是否正确
-- 依赖是否完整安装
-
-### 问题: 无法执行交易
-
-**检查**:
-- 钱包余额是否充足
-- 网络连接是否正常
-- 私钥是否正确
-- API 访问是否受限
-
-### 问题: 交易被过滤
-
-**检查**:
-- `min_trade_amount` 是否设置过高
-- 活动类型是否为 `TRADE`
-- 查看日志了解具体原因
-
-## 🛠️ 开发
-
-### 添加自定义订阅者
-
-```python
-def my_custom_handler(activities: List[dict]):
-    for activity in activities:
-        # 自定义处理逻辑
-        pass
-
-# 在 main.py 中订阅
-activity_queue.subscribe(wallet_address, my_custom_handler)
-```
-
-### 扩展过滤逻辑
-
-在 `CopyTrader._should_process_activity()` 中添加自定义过滤条件：
-
-```python
-# 添加市场白名单过滤
-whitelist = self.strategy_config.get('whitelist_markets', [])
-if whitelist and market_id not in whitelist:
-    return False
-```
-
-## 📚 相关文档
-
-- [设计文档](docs/design/copy-trading-feature-design.md)
-- [实现总结](COPY_TRADING_IMPLEMENTATION.md)
-- [消息队列重构总结](MESSAGE_QUEUE_REFACTOR_SUMMARY.md)
-- [Polymarket CLOB API 文档](https://docs.polymarket.com/)
-- [py-clob-client GitHub](https://github.com/Polymarket/py-clob-client)
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 许可证
-
-[MIT License](LICENSE)
-
-## ⚖️ 免责声明
-
-本软件仅供学习和研究使用。使用本软件进行实际交易的风险由用户自行承担。作者不对任何资金损失负责。
-
-**重要提示**:
-- 加密货币交易存在高风险
-- 过去的表现不代表未来收益
-- 请仅使用您能承受损失的资金
-- 在使用前充分理解交易规则和风险
 
 ---
 
-**Happy Trading! 🚀**
+## 测试
 
-如有问题，请查看日志文件或提交 Issue。
+```bash
+python test_copy_trader.py
+python test_message_queue.py
+python test_min_trade_amount.py
+```
+
+辅助工具：
+
+```bash
+python verify_key_address.py      # 验证私钥与地址
+python check_allowance_onchain.py # 检查链上代币授权
+python debug_limit_order.py --help
+```
+
+---
+
+## 日志
+
+日志默认写入 `logs/` 目录（可通过 `logging.log_dir` 配置）。
+
+```bash
+# Linux / macOS
+tail -f logs/polymarket_bot.log
+
+# Windows PowerShell
+Get-Content logs\polymarket_bot.log -Wait
+```
+
+日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR`。
+
+---
+
+## 故障排查
+
+| 问题 | 排查方向 |
+|------|----------|
+| 程序无法启动 | `config.yaml` 语法；`.env` 是否存在；依赖是否安装 |
+| 私钥错误 | 环境变量名是否与 `private_key_env` 一致；是否以 `0x` 开头 |
+| 没有跟单 | `min_trigger_amount` 是否过高；活动类型是否为 `TRADE` |
+| 下单失败 | USDC 余额；代理授权（Enable Trading）；网络/代理 |
+| API 无法访问 | 配置 `polymarket_api.proxy`；检查 SSL 设置 |
+
+---
+
+## 安全建议
+
+1. **切勿**将私钥写入 `config.yaml` 或提交 `.env` 到版本库。
+2. 使用**专用交易钱包**，仅存放可承受损失的资金。
+3. 先用**较低的 `scale_percentage`** 和较小的 `max_trade_amount` 测试。
+4. 定期查看日志并监控链上余额。
+5. 生产环境建议使用密钥管理服务（AWS Secrets Manager、Vault 等），而非明文 `.env`。
+
+---
+
+## 相关文档
+
+- [快速启动指南](QUICKSTART.md)
+- [复制交易设计文档](docs/design/copy-trading-feature-design.md)
+- [钱包监控设计文档](docs/design/wallet-monitor-design-doc.md)
+- [Polymarket CLOB API](https://docs.polymarket.com/)
+- [py-clob-client](https://github.com/Polymarket/py-clob-client)
+
+---
+
+## 已知限制
+
+- RabbitMQ 队列后端尚未实现（`queue.type: rabbitmq` 会报错）
+- `allocate` 复制模式未完成
+- `limit_order_duration` 已配置但尚未应用到提交的订单
+- PostgreSQL 持久化（`DatabaseHandler`）存在，但未接入主监控流程
+
+---
+
+## 免责声明
+
+本软件仅供**学习与研究**使用。预测市场交易存在较高财务风险，使用本工具产生的任何损失由使用者自行承担。
+
+- 被复制交易者的历史表现不代表未来收益
+- 请仅使用可承受损失的资金
+- 使用前请了解 Polymarket 服务条款及所在地区的相关法规
+
+---
+
+## 许可证
+
+请参阅仓库中的许可证文件。如未提供，请联系仓库维护者了解使用条款。

@@ -32,17 +32,40 @@ def parse_timestamp(ts: Union[datetime, str, int, float]) -> Optional[datetime]:
     """
     try:
         if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                return ts.replace(tzinfo=timezone.utc)
             return ts
         elif isinstance(ts, str):
-            # Try parsing ISO format
-            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            parsed = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
         elif isinstance(ts, (int, float)):
-            # Unix timestamp
-            return datetime.fromtimestamp(ts)
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
     except Exception as e:
         log.warning(f"Failed to parse timestamp: {ts}, error: {e}")
 
     return None
+
+
+def advance_checkpoint(timestamp: datetime) -> datetime:
+    """
+    Advance checkpoint past the last processed activity to avoid duplicates.
+
+    Polymarket activity queries use an inclusive start time, so the next poll
+    would re-fetch activities that share the same timestamp unless we move
+    the checkpoint forward slightly.
+
+    Args:
+        timestamp: Latest processed activity timestamp
+
+    Returns:
+        Checkpoint value safe to use as the next query start time
+    """
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    return timestamp + timedelta(microseconds=1)
 
 
 def to_utc8(dt: datetime) -> datetime:
